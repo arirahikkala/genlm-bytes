@@ -111,7 +111,7 @@ class LazyTrieState:
         """Transitions to a new state by consuming a byte.
 
         Args:
-            b (int): Byte to consume
+            b (int): Byte to consume (0-255 for regular bytes, 257 for EOS, 258+ for special tokens)
 
         Returns:
             (LazyTrieState|None): New state after consuming byte, or None if transition invalid (terminated or EOS)
@@ -121,6 +121,20 @@ class LazyTrieState:
 
         if node := self.children[self.node].get(b):
             mass = self.mass
+
+            # Special token virtual bytes: commit to LM state and return to root
+            if b in self.trie.trie.special_token_bytes:
+                token_id = self.trie.trie.special_token_bytes[b]
+                return LazyTrieState(
+                    lm_state=self.lm_state << token_id,
+                    trie=self.trie,
+                    mass=None,  # needs rematerialization
+                    node=self.root,
+                    weight=self.weight + mass[node] - mass[self.node],
+                    mode=self.mode,
+                    terminated=False,
+                )
+
             return LazyTrieState(
                 lm_state=self.lm_state,
                 trie=self.trie,
@@ -157,14 +171,18 @@ class LazyTrieState:
         Returns:
             (LazyByteProbs): Lazy log probability distribution over possible next bytes
         """
-        logps = np.full(258, -np.inf)  # 258 for EOT, EOS + 256 for normal bytes
+        n_special = len(self.trie.trie.special_tokens)
+        logps = np.full(258 + n_special, -np.inf)
         mass = self.mass
         logZ = mass[self.node]
 
         for byte, node in self.actions().items():
             logps[byte if byte is not None else 256] = mass[node] - logZ
 
-        return LazyByteProbs(logps)
+        special_token_names = [
+            repr(t) for t in self.trie.trie.special_tokens
+        ]
+        return LazyByteProbs(logps, special_token_names=special_token_names)
 
     async def materialize(self):
         """Materializes the masses for each node in the trie for the current state.

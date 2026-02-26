@@ -9,43 +9,49 @@ from arsenal import colors
 class LazyByteProbs:
     """Represents a lazy (log) probability distribution over bytes.
 
-    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol and a single EOS (End of Sequence) symbol.
+    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol,
+    a single EOS (End of Sequence) symbol, and optionally additional special token slots.
 
     Args:
-        ps (list): List of probabilities (256 bytes + 1 EOT + 1 EOS = 258 total)
+        ps (list): List of probabilities (256 bytes + 1 EOT + 1 EOS + N special tokens)
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
+        special_token_names (list[str], optional): Display names for special token slots (indices 258+).
     """
 
-    def __init__(self, ps, log_space=True):
-        assert len(ps) == 258  # Fixed size: 256 bytes + 1 EOT + 1 EOS
+    def __init__(self, ps, log_space=True, special_token_names=None):
+        self.special_token_names = special_token_names or []
+        assert len(ps) == 258 + len(self.special_token_names)
         self.ps = ps
         self.log_space = log_space
 
+    @property
+    def n_special(self):
+        """Number of special token slots beyond the base 258 (bytes + EOT + EOS)."""
+        return len(self.ps) - 258
+
     def __getitem__(self, b):
-        """Get probability for a byte, EOT, or EOS.
+        """Get probability for a byte, EOT, EOS, or special token.
 
         Args:
-            b (int|None): Byte value, None for EOT, or 257 for EOS
+            b (int|None): Byte value, None for EOT, 257 for EOS, or 258+ for special tokens
 
         Returns:
-            (float): Probability (or log probability) for the byte/EOT/EOS
+            (float): Probability (or log probability) for the byte/EOT/EOS/special token
         """
         if b is None:  # EOT
             return self.ps[256]
-        elif b == 257:  # EOS token
-            return self.ps[257]
-        elif b >= 258:  # invalid index
-            raise ValueError(
-                f"Invalid index: {b}. Must be between 0 and 257, or None for EOT."
-            )
-        else:  # Regular byte
+        elif 0 <= b < len(self.ps):
             return self.ps[b]
+        else:
+            raise ValueError(
+                f"Invalid index: {b}. Must be between 0 and {len(self.ps) - 1}, or None for EOT."
+            )
 
     def materialize(self):
         """Materializes the probability distribution into a Chart.
 
         Returns:
-            (Chart): Chart with probabilities for each byte/EOT/EOS
+            (Chart): Chart with probabilities for each byte/EOT/EOS/special token
         """
         Q = Chart(-np.inf if self.log_space else 0)
         # Regular bytes (0-255)
@@ -55,6 +61,9 @@ class LazyByteProbs:
         Q[None] = self.ps[256]
         # EOS (257)
         Q[257] = self.ps[257]
+        # Special tokens (258+)
+        for i in range(258, len(self.ps)):
+            Q[i] = self.ps[i]
         return Q
 
     def pretty(self):
@@ -63,13 +72,22 @@ class LazyByteProbs:
         Returns:
             (str): Pretty string representation of the probability distribution
         """
-        return self.materialize().map_keys(
-            lambda x: bytes([x])
-            if isinstance(x, int) and 0 <= x <= 255
-            else "EOS"
-            if x == 257
-            else "EOT"
-        )
+
+        def _format_key(x):
+            if isinstance(x, int) and 0 <= x <= 255:
+                return bytes([x])
+            elif x == 257:
+                return "EOS"
+            elif x is None:
+                return "EOT"
+            elif isinstance(x, int) and x >= 258:
+                idx = x - 258
+                if idx < len(self.special_token_names):
+                    return self.special_token_names[idx]
+                return f"SPECIAL_{idx}"
+            return x
+
+        return self.materialize().map_keys(_format_key)
 
 
 def logsumexp(arr):
@@ -293,7 +311,7 @@ def format_byte(byte_val: int) -> str:
     """Format a byte value for display/debugging.
 
     Args:
-        byte_val: Integer byte value (0-255 for normal bytes, 256 for EOT, 257 for EOS)
+        byte_val: Integer byte value (0-255 for normal bytes, 256 for EOT, 257 for EOS, 258+ for special tokens)
 
     Returns:
         String representation like "b'A'" for normal bytes or "256" for special values

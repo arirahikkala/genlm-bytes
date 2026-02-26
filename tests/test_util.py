@@ -31,7 +31,7 @@ class TestLazyByteProbs:
         assert lazy_probs.log_space is True
 
     def test_init_wrong_length(self):
-        ps = [0.1] * 255  # Wrong length
+        ps = [0.1] * 255  # Too short (less than 258)
         with pytest.raises(AssertionError):
             LazyByteProbs(ps)
 
@@ -90,7 +90,36 @@ class TestLazyByteProbs:
         ps = list(range(258))
         lazy_probs = LazyByteProbs(ps)
         with pytest.raises(ValueError):
-            lazy_probs[258]
+            lazy_probs[258]  # 258 is out of range for a 258-element array
+
+    def test_variable_length(self):
+        """Test LazyByteProbs with special token slots."""
+        ps = [0.1] * 256 + [0.2] + [0.3] + [0.4, 0.5]  # 260 total
+        lazy_probs = LazyByteProbs(ps, log_space=False, special_token_names=["<|im_start|>", "<|tool|>"])
+        assert lazy_probs.n_special == 2
+        assert lazy_probs[258] == 0.4
+        assert lazy_probs[259] == 0.5
+
+    def test_variable_length_materialize(self):
+        """Test materialize with special token slots."""
+        ps = [-1.0] * 256 + [-2.0] + [-3.0] + [-4.0]  # 259 total
+        lazy_probs = LazyByteProbs(ps, log_space=True, special_token_names=["tok0"])
+        chart = lazy_probs.materialize()
+        assert chart[258] == -4.0
+
+    def test_variable_length_pretty(self):
+        """Test pretty with special token names."""
+        ps = [0.1] * 256 + [0.2] + [0.3] + [0.4, 0.5]
+        lazy_probs = LazyByteProbs(ps, log_space=False, special_token_names=["<|im_start|>", "<|tool|>"])
+        pretty_chart = lazy_probs.pretty()
+        assert "<|im_start|>" in pretty_chart
+        assert "<|tool|>" in pretty_chart
+
+    def test_variable_length_wrong_count(self):
+        """Test that mismatched ps length and special_token_names raises."""
+        ps = [0.1] * 258  # no extra slots
+        with pytest.raises(AssertionError):
+            LazyByteProbs(ps, special_token_names=["too_many"])
 
 
 def test_format_table():

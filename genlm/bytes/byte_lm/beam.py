@@ -24,6 +24,8 @@ class BeamParams:
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
         eos_tokens (list[bytes], optional): List of tokens that should be treated as EOS. When configured,
             EOS tokens will terminate generation when sampled. Defaults to None
+        special_tokens (list[bytes], optional): List of tokens to surface as additional discrete entries
+            in the byte-level distribution. Each gets its own slot at indices 258, 259, ...
         heal (bool, optional): Whether to enable adaptive token healing. Defaults to True
         heal_max_backoff (int, optional): Maximum number of bytes to back off when healing. Defaults to None
         heal_max_splits (int, optional): Maximum number of intra-suffix commits allowed during a single healing attempt. Defaults to None
@@ -33,6 +35,7 @@ class BeamParams:
     prune_threshold: float = 0.0
     verbose: bool = False
     eos_tokens: list[bytes] = None
+    special_tokens: list[bytes] = None
     heal: bool = True
     heal_max_backoff: int | None = None
     # Optional cap on how many intra-partial commits are allowed during a
@@ -49,6 +52,7 @@ class BeamParams:
             np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
         )
         self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else set()
+        self.special_tokens = list(self.special_tokens) if self.special_tokens else []
 
 
 class ByteBeamState(StatefulByteLM):
@@ -79,9 +83,11 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): Initial beam state.
         """
-        # Handle EOS tokens
+        # Handle EOS tokens and special tokens
         trie_opts = trie_opts or {}
         trie_opts["eos_tokens"] = params.eos_tokens
+        if params.special_tokens:
+            trie_opts["special_tokens"] = params.special_tokens
 
         async_trie = AsyncTokenByteTrie.from_vocab(
             get_byte_vocab(llm.tokenizer), **trie_opts
@@ -121,6 +127,11 @@ class ByteBeamState(StatefulByteLM):
             if new_state := state << a:
                 new_states.append(new_state)
 
+        # Materialize any states that need it (e.g., after special token transitions)
+        to_materialize = [s for s in new_states if s._mass is None]
+        if to_materialize:
+            await asyncio.gather(*(s.materialize() for s in to_materialize))
+
         new_state = ByteBeamState(new_states, self.params)
 
         # If advancing would empty the beam, do adaptive healing if enabled
@@ -154,10 +165,17 @@ class ByteBeamState(StatefulByteLM):
 
         logqs = np.stack(logqs, axis=0)  # shape: (num_states, array_size)
         # mask EOT positions of non-extended (EOT is at index 256)
-        logqs[: len(self), -2] = -np.inf
+        logqs[: len(self), 256] = -np.inf
         logps = scipy_logsumexp(logqs, axis=0)
 
-        return LazyByteProbs(logps - logsumexp(logps))
+        special_token_names = [
+            repr(t) for t in self.params.special_tokens
+        ] if self.params.special_tokens else None
+
+        return LazyByteProbs(
+            logps - logsumexp(logps),
+            special_token_names=special_token_names,
+        )
 
     async def extend(self, logZ):
         """Attempts to advance each candidate in the beam by a token (EOT).

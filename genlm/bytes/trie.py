@@ -26,6 +26,7 @@ class TokenByteTrie:
         atomic_tokens=None,
         eot_token=None,
         eos_tokens=None,
+        special_tokens=None,
         max_batch_size=64,
     ):
         """Initialize a `TokenByteTrie`.
@@ -36,6 +37,8 @@ class TokenByteTrie:
             atomic_tokens (list[bytes], optional): List of tokens that should be treated as atomic units rather than being split into bytes.
             eot_token (bytes|None, optional): End-of-token token. Default is None, which represents EOT as None.
             eos_tokens (set[bytes], optional): Set of tokens that should be treated as EOS (End of Sequence).
+            special_tokens (list[bytes], optional): List of tokens to surface as additional discrete entries
+                in the byte-level distribution. Each gets its own slot at indices 258, 259, ...
             max_batch_size (int, optional): Maximum batch size for weight sum sparse matrix multiplication.
         """
         self.decode = decode
@@ -50,6 +53,10 @@ class TokenByteTrie:
         self.eos_token_ids = [
             i for i, token in enumerate(decode) if token in self.eos_tokens
         ]
+
+        self.special_tokens = list(special_tokens or [])
+        self.special_token_ids = []
+        self.special_token_bytes = {}  # virtual byte -> token_id
 
         self._build_trie(atomic_tokens or [])
         self._renumber()
@@ -72,6 +79,10 @@ class TokenByteTrie:
         for token in self.eos_tokens:
             if token not in self.decode:
                 raise ValueError(f"EOS token {token} not in vocabulary")
+
+        for token in self.special_tokens:
+            if token not in self.decode:
+                raise ValueError(f"Special token {token} not in vocabulary")
 
         self.word2leaf = {}
         self.children = [{}]  # First node is root
@@ -102,6 +113,20 @@ class TokenByteTrie:
         self.eos_node = len(self.children)
         self.children.append({})  # Create the EOS node
         self.children[self.root][EOS] = self.eos_node
+
+        # Create special token nodes, each connected from root via virtual bytes 258, 259, ...
+        self.special_nodes = {}
+        self.special_token_ids = []
+        self.special_token_bytes = {}
+        for i, token in enumerate(self.special_tokens):
+            vbyte = 258 + i
+            token_id = self.lookup[token]
+            self.special_token_ids.append(token_id)
+            self.special_token_bytes[vbyte] = token_id
+            node = len(self.children)
+            self.children.append({})
+            self.children[self.root][vbyte] = node
+            self.special_nodes[vbyte] = node
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
         self.jump = [
@@ -180,6 +205,9 @@ class TokenByteTrie:
         # Update EOS node after renumbering
         self.eos_node = f(self.eos_node)
 
+        # Update special nodes after renumbering
+        self.special_nodes = {vbyte: f(node) for vbyte, node in self.special_nodes.items()}
+
     def _build_node2prefix(self):
         """Builds a mapping from each node to its prefix.
 
@@ -218,6 +246,7 @@ class TokenByteTrie:
         - An ancestor of leaf node i in the trie
 
         For propagate_eos mode, EOS tokens contribute directly to eos_node and root.
+        Special tokens are diverted to their respective special nodes and root.
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
         parent = self._build_parent_map()
@@ -226,6 +255,11 @@ class TokenByteTrie:
         # Build with_eos matrix (maps EOS tokens to the eos_node only)
         rows_with_eos, cols_with_eos = [], []
 
+        # Build a mapping from special token_id to virtual byte for quick lookup
+        special_tid_to_vbyte = {}
+        for vbyte, tid in self.special_token_bytes.items():
+            special_tid_to_vbyte.setdefault(tid, []).append(vbyte)
+
         for i, node in enumerate(leaf_indices):
             token_id = self.token_id_to_leaf[i, 0]
             token = self.decode[token_id]
@@ -233,22 +267,29 @@ class TokenByteTrie:
             # self-connection
             rows_no_eos.append(i)
             cols_no_eos.append(node)
-            if token not in self.eos_tokens:
-                rows_with_eos.append(i)
-                cols_with_eos.append(node)
-            else:
+            if token in self.eos_tokens:
                 # EOS tokens: contribute directly to eos_node and root
                 rows_with_eos.append(i)
                 cols_with_eos.append(self.eos_node)
                 rows_with_eos.append(i)
                 cols_with_eos.append(self.root)
+            elif token_id in special_tid_to_vbyte:
+                # Special tokens: divert to their special node(s) and root
+                for vbyte in special_tid_to_vbyte[token_id]:
+                    rows_with_eos.append(i)
+                    cols_with_eos.append(self.special_nodes[vbyte])
+                rows_with_eos.append(i)
+                cols_with_eos.append(self.root)
+            else:
+                rows_with_eos.append(i)
+                cols_with_eos.append(node)
 
             current = node
             while current in parent:
                 ancestor = parent[current]
                 rows_no_eos.append(i)
                 cols_no_eos.append(ancestor)
-                if token not in self.eos_tokens:
+                if token not in self.eos_tokens and token_id not in special_tid_to_vbyte:
                     rows_with_eos.append(i)
                     cols_with_eos.append(ancestor)
                 current = ancestor
