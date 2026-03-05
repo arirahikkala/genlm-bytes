@@ -49,13 +49,14 @@ class LazyTrieState:
         self.terminated = terminated
 
     @classmethod
-    def initial(cls, lm, trie, mode=TrieMode.WITH_EOS):
+    def initial(cls, lm, trie, mode=TrieMode.WITH_EOS, initial_context=None):
         """Creates an initial trie state.
 
         Args:
             lm (genlm.backend.AsyncLM): Language model to use
             trie (TokenByteTrie): TokenByteTrie structure for byte-to-token mapping
             mode (TrieMode): Trie mode to use
+            initial_context (list, optional): Initial context of token IDs for the LM.
 
         Returns:
             (LazyTrieState): Initial state at root of trie with weight 0.0
@@ -63,7 +64,7 @@ class LazyTrieState:
         return cls(
             trie=trie,
             node=trie.trie.root,
-            lm_state=StatefulTokenizedLM.initial(lm),
+            lm_state=StatefulTokenizedLM.initial(lm, initial_context=initial_context),
             weight=0.0,
             mode=mode,
         )

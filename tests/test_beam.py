@@ -2,6 +2,7 @@ import torch
 import pytest
 import numpy as np
 from genlm.backend import load_model_by_name
+from genlm.backend.llm import MockAsyncLM
 from genlm.bytes import ByteBeamState, BeamParams
 from genlm.bytes.trie import EOS
 
@@ -205,3 +206,31 @@ async def test_eos_logp_next_probability_sum(llm):
         np.testing.assert_allclose(eos_logp, logps_eos, rtol=1e-5)
     finally:
         await beam.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_empty_initial_context():
+    """Test that models without a BOS token (empty initial context) work correctly."""
+    mock_llm = MockAsyncLM.from_name("gpt2")
+
+    # Explicitly pass empty initial context (simulates tokenizer with bos_token_id=None)
+    state = await ByteBeamState.initial(
+        mock_llm,
+        BeamParams(K=3),
+        initial_context=[],
+    )
+
+    try:
+        assert len(state) > 0
+        assert state.states[0].lm_state.context == []
+
+        # Verify we can compute next-byte probabilities
+        logp = await state.logp_next()
+        probs = logp.materialize()
+        assert len(probs) > 0
+
+        # Verify we can advance by a byte
+        next_state = await (state.prune() << ord(b"a"))
+        assert len(next_state) > 0
+    finally:
+        await state.cleanup()

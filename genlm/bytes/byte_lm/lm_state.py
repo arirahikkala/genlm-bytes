@@ -28,14 +28,16 @@ class StatefulTokenizedLM:
 
         Args:
             model (genlm.backend.AsyncLM): The language model to use
-            initial_context (list, optional): Initial context of token IDs. Defaults to [tokenizer.bos_token_id]
+            initial_context (list, optional): Initial context of token IDs.
+                Defaults to [tokenizer.bos_token_id], or [] if bos_token_id is None.
             max_context_length (int, optional): Maximum context length to maintain
 
         Returns:
             (StatefulTokenizedLM): A new instance with initial state
         """
         if initial_context is None:
-            initial_context = [model.tokenizer.bos_token_id]
+            bos = model.tokenizer.bos_token_id
+            initial_context = [bos] if bos is not None else []
         return cls(model, initial_context, max_context_length=max_context_length)
 
     def __lshift__(self, token):
