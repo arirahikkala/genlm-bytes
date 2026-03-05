@@ -234,3 +234,34 @@ async def test_empty_initial_context():
         assert len(next_state) > 0
     finally:
         await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_vocab_size_mismatch():
+    """Test that models whose logprob tensor is larger than the tokenizer vocab still work."""
+    base_llm = MockAsyncLM.from_name("gpt2")
+    extra_tokens = 100
+
+    class PaddedMockLM(MockAsyncLM):
+        """Mock LM that returns logprobs with extra entries beyond tokenizer vocab size."""
+
+        async def next_token_logprobs(self, token_ids):
+            logprobs = await super().next_token_logprobs(token_ids)
+            padding = torch.full((extra_tokens,), -1e10)
+            return torch.cat([logprobs, padding])
+
+    padded_llm = PaddedMockLM(base_llm.tokenizer)
+
+    state = await ByteBeamState.initial(padded_llm, BeamParams(K=3))
+
+    try:
+        assert len(state) > 0
+
+        logp = await state.logp_next()
+        probs = logp.materialize()
+        assert len(probs) > 0
+
+        next_state = await (state.prune() << ord(b"a"))
+        assert len(next_state) > 0
+    finally:
+        await state.cleanup()

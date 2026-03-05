@@ -195,6 +195,9 @@ class LazyTrieState:
         """
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
+            vocab_size = len(self.trie.trie.decode)
+            if logp_next.shape[0] > vocab_size:
+                logp_next = logp_next[:vocab_size]
             log_mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
             mass = torch.log(log_mass)
             self._mass = mass.cpu().numpy()
