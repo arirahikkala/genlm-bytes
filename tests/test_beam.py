@@ -265,3 +265,39 @@ async def test_vocab_size_mismatch():
         assert len(next_state) > 0
     finally:
         await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_vocab_size_mismatch_renormalization():
+    """Test that slicing logprobs to vocab_size renormalizes the distribution."""
+    base_llm = MockAsyncLM.from_name("gpt2")
+
+    # Use significant padding mass so renormalization matters
+    class PaddedMockLM(MockAsyncLM):
+        async def next_token_logprobs(self, token_ids):
+            logprobs = await super().next_token_logprobs(token_ids)
+            # Add extra tokens with non-negligible probability
+            padding = torch.full((100,), -5.0)
+            return torch.cat([logprobs, padding])
+
+    padded_llm = PaddedMockLM(base_llm.tokenizer)
+
+    padded_state = await ByteBeamState.initial(padded_llm, BeamParams(K=3))
+    base_state = await ByteBeamState.initial(base_llm, BeamParams(K=3))
+
+    try:
+        padded_logp = await padded_state.logp_next()
+        base_logp = await base_state.logp_next()
+
+        padded_probs = padded_logp.materialize()
+        base_probs = base_logp.materialize()
+
+        # After renormalization, byte distributions should match
+        for byte_val in base_probs:
+            if base_probs[byte_val] > -10:
+                np.testing.assert_allclose(
+                    padded_probs[byte_val], base_probs[byte_val], atol=1e-4
+                )
+    finally:
+        await padded_state.cleanup()
+        await base_state.cleanup()
