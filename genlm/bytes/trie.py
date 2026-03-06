@@ -278,6 +278,10 @@ class TokenByteTrie:
                 for vbyte in special_tid_to_vbyte[token_id]:
                     rows_with_eos.append(i)
                     cols_with_eos.append(self.special_nodes[vbyte])
+                    # Also populate special nodes in no_eos mode so that
+                    # special token bytes can be consumed in either mode.
+                    rows_no_eos.append(i)
+                    cols_no_eos.append(self.special_nodes[vbyte])
                 rows_with_eos.append(i)
                 cols_with_eos.append(self.root)
             else:

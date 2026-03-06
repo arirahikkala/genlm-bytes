@@ -70,16 +70,18 @@ def test_special_tokens_in_reachability_with_eos(special_trie):
 
 
 def test_special_tokens_in_reachability_without_eos(special_trie):
-    """In WITHOUT_EOS mode, special tokens are treated as normal tokens."""
+    """In WITHOUT_EOS mode, special tokens propagate mass to both trie path and special nodes."""
     weights = torch.tensor([0.1, 0.1, 0.3, 0.2, 0.1, 0.2])
 
     masses = special_trie.weight_sum(weights, mode=TrieMode.WITHOUT_EOS)
 
-    # Special nodes should have zero mass in no_eos mode
-    for vbyte in special_trie.special_nodes:
-        assert masses[special_trie.special_nodes[vbyte]] == 0.0
+    # Special nodes should have their token's mass (so special bytes work in either mode)
+    im_start_mass = masses[special_trie.special_nodes[258]]
+    tool_mass = masses[special_trie.special_nodes[259]]
+    assert np.isclose(im_start_mass.item(), 0.3, rtol=1e-5)
+    assert np.isclose(tool_mass.item(), 0.2, rtol=1e-5)
 
-    # EOS node should also have zero mass
+    # EOS node should still have zero mass in no_eos mode
     assert masses[special_trie.eos_node] == 0.0
 
     # Root should have total mass
